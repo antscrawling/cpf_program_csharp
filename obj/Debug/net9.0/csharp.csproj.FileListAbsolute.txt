@@ -26,3 +26,4 @@
 /Users/joseibay/localdocs/cpf_program_csharp/obj/Debug/net9.0/csharp.pdb
 /Users/joseibay/localdocs/cpf_program_csharp/obj/Debug/net9.0/csharp.genruntimeconfig.cache
 /Users/joseibay/localdocs/cpf_program_csharp/obj/Debug/net9.0/ref/csharp.dll
+/Users/joseibay/localdocs/cpf_program_csharp/obj/Debug/net9.0/csharp.sourcelink.json
