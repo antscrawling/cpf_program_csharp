@@ -6,6 +6,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Reflection;
+using System.Globalization;
 
 public class CPFAccount
 {
@@ -89,6 +90,22 @@ public class CPFAccount
     public double LoanPaymentYear12 { get; set; }
     public double LoanPaymentYear3 { get; set; }
     public double LoanPaymentYear4beyond { get; set; }
+    public int counter = 100000000;
+    private string CsvLogFilePath = "cpf_report.csv";
+
+    private void LogAccountMovement(DateTime date,int counter, int age, string account, string movementType, double amount, double balanceAfter, string remarks = "")
+    {
+        
+        bool fileExists = File.Exists(CsvLogFilePath);
+        using (var writer = new StreamWriter(CsvLogFilePath, append: true)) 
+        {
+            if (!fileExists)
+            {
+                writer.WriteLine("Date,Age,Account,MovementType,Amount,BalanceAfter,Remarks");
+            }
+            writer.WriteLine($"{date:yyyy-MM-dd},{counter++},{age},{account},{movementType},{amount.ToString("F2", CultureInfo.InvariantCulture)},{balanceAfter.ToString("F2", CultureInfo.InvariantCulture)},\"{remarks.Replace("\"", "'")}\"");
+        }
+    }
 
     public void PrintProjection(DateTime startDate, int currentAge, int targetAge, DateTime birthDate)
     {
@@ -196,17 +213,25 @@ public class CPFAccount
             {
                 // Before age 55, contributions go to OA, SA, and MA as normal
                 OABalance += oaAllocation;
+                LogAccountMovement(currentDate, counter++, age, "OA", "Contribution", oaAllocation, OABalance, "Monthly allocation");
                 SABalance += saAllocation;
+                LogAccountMovement(currentDate, counter++, age, "SA", "Contribution", saAllocation, SABalance, "Monthly allocation");
                 MABalance += maAllocation;
-                
+                LogAccountMovement(currentDate, counter++, age, "MA", "Contribution", maAllocation, MABalance, "Monthly allocation");
                 // Redistribute RA allocation to OA, SA, and MA according to below-55 allocation ratios
                 // since RA doesn't exist before age 55
                 if (raAllocation > 0)
                 {
                     double totalRatio = AllocationBelow55OA + AllocationBelow55SA + AllocationBelow55MA;
-                    OABalance += raAllocation * (AllocationBelow55OA / totalRatio);
-                    SABalance += raAllocation * (AllocationBelow55SA / totalRatio);
-                    MABalance += raAllocation * (AllocationBelow55MA / totalRatio);
+                    double oaAdd = raAllocation * (AllocationBelow55OA / totalRatio);
+                    double saAdd = raAllocation * (AllocationBelow55SA / totalRatio);
+                    double maAdd = raAllocation * (AllocationBelow55MA / totalRatio);
+                    OABalance += oaAdd;
+                    LogAccountMovement(currentDate, counter++, age, "OA", "Redistributed RA Allocation", oaAdd, OABalance, "Redistributed RA allocation");
+                    SABalance += saAdd;
+                    LogAccountMovement(currentDate, counter++, age, "SA", "Redistributed RA Allocation", saAdd, SABalance, "Redistributed RA allocation");
+                    MABalance += maAdd;
+                    LogAccountMovement(currentDate, counter++, age, "MA", "Redistributed RA Allocation", maAdd, MABalance, "Redistributed RA allocation");
                 }
             }
             else
@@ -217,21 +242,23 @@ public class CPFAccount
                     // For the first month at age 55, we still add to OA and SA
                     // These will be transferred to RA later in Step 6
                     OABalance += oaAllocation;
+                    LogAccountMovement(currentDate, counter++, age, "OA", "Contribution", oaAllocation, OABalance, "Monthly allocation");
                     SABalance += saAllocation;
+                    LogAccountMovement(currentDate, counter++, age, "SA", "Contribution", saAllocation, SABalance, "Monthly allocation");
                     MABalance += maAllocation;
-                    // Store the RA allocation for use in Step 6
-                    // We already calculated raAllocation above, no need to recalculate
+                    LogAccountMovement(currentDate, counter++, age, "MA", "Contribution", maAllocation, MABalance, "Monthly allocation");
                 }
                 else
                 {
                     // After the first month at 55, OA is still used but SA is closed
                     OABalance += oaAllocation;
+                    LogAccountMovement(currentDate, counter++, age, "OA", "Contribution", oaAllocation, OABalance, "Monthly allocation");
                     // No allocation to SA after 55
                     MABalance += maAllocation;
-                    
+                    LogAccountMovement(currentDate, counter++, age, "MA", "Contribution", maAllocation, MABalance, "Monthly allocation");
                     // Always add RA allocation to RA balance directly (not to excess)
-               //     Console.WriteLine($"Adding monthly RA allocation: ${raAllocation:F2} to RA balance");
                     RABalance += raAllocation;
+                    LogAccountMovement(currentDate, counter++, age, "RA", "Contribution", raAllocation, RABalance, "Monthly allocation");
                 }
             }
             
@@ -247,7 +274,8 @@ public class CPFAccount
             double raBaseInterest = (age >= 55) ? RABalance * RAInterestRate : 0;
             
             // Step 4 & 5: Calculate extra interest based on age
-            double extraInterest = 0.0;
+            double extraInterest1 = 0.0;
+            double extraInterest2 = 0.0; // For below 55
             
             if (age < 55)
             {
@@ -258,7 +286,7 @@ public class CPFAccount
                 double remainingBalanceForExtraInterest = Math.Min(60000 - oaForExtraInterest, SABalance + MABalance);
                 double combinedBalanceForExtraInterest = oaForExtraInterest + remainingBalanceForExtraInterest;
                 // paid only in December
-                extraInterest = combinedBalanceForExtraInterest * ExtraInterestBelow55 ;
+                extraInterest1 = combinedBalanceForExtraInterest * ExtraInterestBelow55;
             }
             else
             {
@@ -266,49 +294,61 @@ public class CPFAccount
                 // The first 30000 combined balance gets 2% extra interest
                 // OA Balance has a cap of 20000
                 double oaForExtraInterest = Math.Min(OABalance, 20000);
-                
+
                 // Include RA in combined balance only at age 55 or above
-                double combinedBalance = (age >= 55) 
+                double combinedBalance = (age >= 55)
                     ? oaForExtraInterest + SABalance + MABalance + RABalance
                     : oaForExtraInterest + SABalance + MABalance;
-                
+
                 double first30kBalance = Math.Min(combinedBalance, 30000);
-                extraInterest += first30kBalance * ExtraInterestFirst30kAbove55;
-                
+                extraInterest2 += first30kBalance * ExtraInterestFirst30kAbove55;
+
                 // The next 30000 combined balance gets 1% extra interest
                 double next30kBalance = Math.Min(Math.Max(0, combinedBalance - 30000), 30000);
-                extraInterest += next30kBalance * ExtraInterestNext30kAbove55;
+                extraInterest2 += next30kBalance * ExtraInterestNext30kAbove55;
             }
             // Base Interest is allocated to respective accounts in December
             // Extra interest allocation depends on age
             if (currentDate.Month == 12)
             {
                 OABalance += oaBaseInterest;
-                SABalance += saBaseInterest;
-                MABalance += maBaseInterest;
+                LogAccountMovement(currentDate, counter++, age, "OA", "Interest", oaBaseInterest, OABalance, "Annual base interest");
+                if (age < 55)
+                { 
+                    SABalance += saBaseInterest;
+                    LogAccountMovement(currentDate, counter++, age, "SA", "Interest", saBaseInterest, SABalance, "Annual base interest");
+                    SABalance += extraInterest1; // Add extra interest to SA before 55
+                    LogAccountMovement(currentDate, counter++, age, "SA", "Extra Interest", extraInterest1, SABalance, "Annual extra interest");
+                }
                 
+                
+                
+                
+                MABalance += maBaseInterest;
+                LogAccountMovement(currentDate, counter++, age, "MA", "Interest", maBaseInterest, MABalance, "Annual base interest");
                 if (age >= 55)
                 {
                     // Log interest calculation for RA account
-                    Console.WriteLine($"Applying annual interest in December - Base RA Interest: ${raBaseInterest:F2}, Extra Interest: ${extraInterest:F2}");
-                    Console.WriteLine($"Before interest - RA: ${RABalance:F2}");
-                    
-                    // After 55, extra interest goes to RA
-                    RABalance += raBaseInterest + extraInterest;
-                    
-                    Console.WriteLine($"After interest - RA: ${RABalance:F2}");
+                    RABalance += raBaseInterest;
+                    LogAccountMovement(currentDate, counter++, age, "RA", "Interest", raBaseInterest , RABalance, "Annual base + extra interest");
+                    RABalance += extraInterest2;
+                    LogAccountMovement(currentDate, counter++, age, "RA", "Extra Interest", extraInterest2 , RABalance, "Annual base + extra interest");
+
                 }
-                else
-                {
-                    // Before 55, distribute extra interest proportionally to SA and MA
-                    // since RA doesn't exist and OA doesn't get extra interest
-                    double totalNonOABalance = SABalance + MABalance;
-                    if (totalNonOABalance > 0)
-                    {
-                        SABalance += extraInterest * (SABalance / totalNonOABalance);
-                        MABalance += extraInterest * (MABalance / totalNonOABalance);
-                    }
-                }
+              //  else
+              //  {
+              //      // Before 55, distribute extra interest proportionally to SA and MA
+              //      double totalNonOABalance = SABalance + MABalance;
+              //      if (totalNonOABalance > 0)
+              //      {
+              //          double saExtra = extraInterest * (SABalance / totalNonOABalance);
+              //          double maExtra = extraInterest * (MABalance / totalNonOABalance);
+              //          SABalance += saExtra;
+              //          LogAccountMovement(currentDate, counter++, age, "SA", "Extra Interest", saExtra, SABalance, "Annual extra interest");
+              //          MABalance += maExtra;
+              //          LogAccountMovement(currentDate, counter++, age, "MA", "Extra Interest", maExtra, MABalance, "Annual extra interest");
+              //      }
+              //  }
             }
            
            
@@ -336,10 +376,12 @@ public class CPFAccount
             if (LoanBalance > monthlyLoanPayment)
             {
                 LoanBalance -= monthlyLoanPayment;
+                LogAccountMovement(currentDate, counter++, age, "Loan", "Payment", monthlyLoanPayment, LoanBalance, "Monthly loan payment");
             }
             else if (LoanBalance > 0)
             {
                 // If loan balance is less than the payment, pay off the remaining balance
+                LogAccountMovement(currentDate, counter++, age, "Loan", "Payment", LoanBalance, 0, "Final loan payment");
                 LoanBalance = 0;
             }
 
@@ -351,16 +393,13 @@ public class CPFAccount
                 // If RABalance is 0, this is the first month at age 55
                 if (RABalance == 0)
                 {
-                    Console.WriteLine($"Creating RA account at age 55 on {currentDate:yyyy-MM-dd}");
-                    Console.WriteLine($"Before transfer - OA: ${OABalance:F2}, SA: ${SABalance:F2}, RA: ${RABalance:F2}, RA Allocation: ${raAllocation:F2}");
-                    
                     // Transfer OA and SA balances to RA and include this month's RA allocation
-                    RABalance = OABalance + SABalance + raAllocation - LoanBalance;
-                    LoanBalance = 0; // Loan balance is cleared after transfer
-                    OABalance = 0; // OA Balance will be used for new contributions only
-                    SABalance = 0; // SA Balance is now closed
-                    
-                    Console.WriteLine($"After transfer - OA: ${OABalance:F2}, SA: ${SABalance:F2}, RA: ${RABalance:F2}");
+                    double transferAmount = OABalance + SABalance + raAllocation - LoanBalance;
+                    LogAccountMovement(currentDate, counter++, age, "OA", "Transfer to RA", OABalance, 0, "OA to RA at 55");
+                    LogAccountMovement(currentDate, counter++, age, "SA", "Transfer to RA", SABalance, 0, "SA to RA at 55");
+                    LogAccountMovement(currentDate, counter++, age, "RA", "Creation/Transfer In", transferAmount, transferAmount, "RA created at 55, OA+SA+RA allocation minus loan");
+                    if (LoanBalance > 0)
+                        LogAccountMovement(currentDate, counter++, age, "Loan", "Cleared at 55", LoanBalance, 0, "Loan cleared at 55");
                 }
             }
             
@@ -368,54 +407,40 @@ public class CPFAccount
             // This should happen right after the RA account is created and funded
             if (age == 55 && RABalance > 0)
             {
-                // Calculate excess balance only after OA and SA have been transferred to RA (first month at 55)
+                // Calculate retirementSumCap in this scope for logging
                 double retirementSumCap = 0.0;
-                
                 if (OwnHDB == "yes" && PledgeYourHDBAt55 == "yes")
                 {
-                    // If own HDB and pledge it, then RA Balance is half of FRS amount
                     retirementSumCap = RetirementSumFRSAmount / 2;
                 }
                 else
                 {
-                    // Otherwise use the payout type from config
                     if (PayoutType == "brs")
-                    {
-                        // BRS: Basic Retirement Sum
                         retirementSumCap = RetirementSumBRSAmount;
-                    }
                     else if (PayoutType == "ers")
-                    {
-                        // ERS: Enhanced Retirement Sum
                         retirementSumCap = RetirementSumERSAmount;
-                    }
                     else if (PayoutType == "frs")
-                    {
-                        // FRS: Full Retirement Sum
                         retirementSumCap = RetirementSumFRSAmount;
-                    }
                 }
-                
                 // Only calculate excess balance once when RA is first created
-                // This ensures monthly RA allocations after age 55 are added to RA
                 if (ExcessBalance == 0)
                 {
                     // Calculate excess if RA balance exceeds retirement sum cap
                     if (RABalance > retirementSumCap)
                     {
-                        ExcessBalance = RABalance - retirementSumCap;
-                        RABalance = retirementSumCap;
-                        
-                        Console.WriteLine($"Excess calculated: RA capped at ${retirementSumCap:F2}, Excess: ${ExcessBalance:F2}");
+                        double excess = RABalance - retirementSumCap;
+                        LogAccountMovement(currentDate, counter++, age, "RA", "Capped at Retirement Sum", excess, retirementSumCap, "RA capped at retirement sum, excess moved");
+                        LogAccountMovement(currentDate, counter++, age, "Excess", "Created", excess, excess, "Excess created from RA cap");
                     }
                 }
-                
-                // Ensure excess balance is not negative
-                if (ExcessBalance < 0)
-                {
-                    ExcessBalance = 0;
-                }
-            }            // Step 8: Calculate the CPF Payout at payout age
+            }
+            
+            // Ensure excess balance is not negative
+            if (ExcessBalance < 0)
+            {
+                ExcessBalance = 0;
+            }
+            // Step 8: Calculate the CPF Payout at payout age
             if (age == CPFPayoutAge)
             {
                 // Calculate monthly payout based on the retirement sum type
@@ -447,21 +472,26 @@ public class CPFAccount
                 // Logging to track payout process
                 Console.WriteLine($"Processing monthly payout at age {age}: ${MonthlyPayout:F2}");
                 Console.WriteLine($"Before payout - RA: ${RABalance:F2}, Excess: ${ExcessBalance:F2}");
-                
                 // Deduct monthly payout from RA balance
                 if (RABalance >= MonthlyPayout)
                 {
                     RABalance -= MonthlyPayout;
+                    LogAccountMovement(currentDate, counter++, age, "RA", "Payout", MonthlyPayout, RABalance, "Monthly payout from RA");
                     ExcessBalance += MonthlyPayout; // Add to excess balance if RA payout is sufficient
+                    LogAccountMovement(currentDate, counter++, age, "Excess", "Payout In", MonthlyPayout, ExcessBalance, "Monthly payout credited to excess");
                 }
                 else
                 {
                     // If RA balance is insufficient, take from excess
                     double remainingPayout = MonthlyPayout - RABalance;
-                    ExcessBalance += RABalance; // Add whatever is left in RA to excess
-                    RABalance = 0;
+                    if (RABalance > 0)
+                    {
+                        LogAccountMovement(currentDate, counter++, age, "RA", "Payout", RABalance, 0, "Partial payout from RA");
+                        ExcessBalance += RABalance;
+                        LogAccountMovement(currentDate, counter++, age, "Excess", "Payout In", RABalance, ExcessBalance, "Partial payout credited to excess");
+                        RABalance = 0;
+                    }
                 }
-                
                 Console.WriteLine($"After payout - RA: ${RABalance:F2}, Excess: ${ExcessBalance:F2}");
             }
 
